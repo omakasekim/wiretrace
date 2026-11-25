@@ -1,6 +1,6 @@
 # wiretrace
 
-[![Live Demo](https://img.shields.io/badge/Live%20Demo-GitHub%20Pages-22d3ee?style=flat-square)](https://aetherx86.github.io/wiretrace/)
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-GitHub%20Pages-22d3ee?style=flat-square)](https://omakasekim.github.io/wiretrace/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-10b981?style=flat-square)](LICENSE)
 
 > **Interactive 3-mode protocol workbench:** SSE & LLM token stream debugger, Webhook payload mutator & replay lab, and JWT / OAuth / `Set-Cookie` security X-Ray.
