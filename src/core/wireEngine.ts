@@ -17,6 +17,8 @@ export interface SseParseResult {
   malformedCount: number;
   totalDurationMs: number;
   avgLatencyMs: number;
+  ttftMs: number;
+  p95LatencyMs: number;
   tokensPerSec: number;
 }
 
@@ -102,6 +104,12 @@ export function parseSseStream(raw: string): SseParseResult {
 
   const malformedCount = frames.filter((f) => f.malformed).length;
   const avgLatencyMs = frames.length ? Math.round(cumulativeMs / frames.length) : 0;
+  const firstTokenFrame = frames.find((f) => f.tokenChunk.length > 0);
+  const ttftMs = firstTokenFrame ? firstTokenFrame.cumulativeMs : frames[0]?.deltaMs ?? 0;
+  const sortedDeltas = frames.map((f) => f.deltaMs).sort((a, b) => a - b);
+  const p95LatencyMs = sortedDeltas.length
+    ? sortedDeltas[Math.min(sortedDeltas.length - 1, Math.floor(sortedDeltas.length * 0.95))]
+    : 0;
   const tokensPerSec = cumulativeMs > 0 ? Number(((frames.filter((f) => f.tokenChunk).length / cumulativeMs) * 1000).toFixed(1)) : 0;
 
   return {
@@ -110,8 +118,86 @@ export function parseSseStream(raw: string): SseParseResult {
     malformedCount,
     totalDurationMs: cumulativeMs,
     avgLatencyMs,
+    ttftMs,
+    p95LatencyMs,
     tokensPerSec,
   };
+}
+
+export function autoRepairSseJson(raw: string): string {
+  return raw
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => {
+      if (!line.startsWith('data:')) return line;
+      const body = line.slice(5).trim();
+      if (!body.startsWith('{') || body === '[DONE]') return line;
+      try {
+        JSON.parse(body);
+        return line;
+      } catch {
+        const openBraces = (body.match(/\{/g) ?? []).length;
+        const closeBraces = (body.match(/\}/g) ?? []).length;
+        const patched = openBraces > closeBraces ? `${body}${'}'.repeat(openBraces - closeBraces)}` : body;
+        try {
+          JSON.parse(patched);
+          return `data: ${patched}`;
+        } catch {
+          return line;
+        }
+      }
+    })
+    .join('\n');
+}
+
+export async function computeHmacSha256Hex(secret: string, payload: string): Promise<string> {
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      'raw',
+      enc.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign'],
+    );
+    const sig = await crypto.subtle.sign('HMAC', key, enc.encode(payload));
+    return Array.from(new Uint8Array(sig))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+  return 'hmac_unavailable_in_env';
+}
+
+export function generateCurlSnippet(wh: WebhookEvent, payload: string, hmacHex: string): string {
+  const escaped = payload.replace(/'/g, "'\\''");
+  return [
+    `curl -X ${wh.method} "http://localhost:3000${wh.path}" \\`,
+    `  -H "Content-Type: application/json" \\`,
+    `  -H "X-Wiretrace-Signature: sha256=${hmacHex}" \\`,
+    `  -d '${escaped}'`,
+  ].join('\n');
+}
+
+export function hardenSetCookieHeader(raw: string): string {
+  const base = raw.split(';')[0]?.trim() || 'session_id=token';
+  return `${base}; Path=/; Max-Age=3600; HttpOnly; Secure; SameSite=Strict`;
+}
+
+export async function generatePkcePair(): Promise<{ verifier: string; challenge: string }> {
+  const bytes = new Uint8Array(32);
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 19 + 7) & 255;
+  }
+  const toB64Url = (arr: Uint8Array) =>
+    btoa(String.fromCharCode(...arr)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  const verifier = toB64Url(bytes);
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+    return { verifier, challenge: toB64Url(new Uint8Array(digest)) };
+  }
+  return { verifier, challenge: verifier.slice(0, 43) };
 }
 
 export const SSE_PRESETS = [

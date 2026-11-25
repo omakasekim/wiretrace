@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   AlertOctagon,
   AlertTriangle,
+  Check,
   CheckCircle2,
+  Copy,
   Download,
   KeyRound,
   Pause,
@@ -11,11 +13,19 @@ import {
   RotateCw,
   Send,
   ShieldCheck,
+  Sparkles,
+  Wand2,
   Webhook,
 } from 'lucide-react';
 import {
+  autoRepairSseJson,
   buildJwtPresets,
+  computeHmacSha256Hex,
   DEMO_WEBHOOKS,
+  encodeBase64UrlJson,
+  generateCurlSnippet,
+  generatePkcePair,
+  hardenSetCookieHeader,
   inspectJwtAndCookie,
   parseSseStream,
   SSE_PRESETS,
@@ -37,6 +47,9 @@ export function App() {
   const [webhooks, setWebhooks] = useState<WebhookEvent[]>(DEMO_WEBHOOKS);
   const [selectedWhId, setSelectedWhId] = useState<string>(DEMO_WEBHOOKS[0].id);
   const [editablePayload, setEditablePayload] = useState<string>(DEMO_WEBHOOKS[0].payload);
+  const [hmacSecret, setHmacSecret] = useState<string>('whsec_aether_local_demo_key');
+  const [liveHmacHex, setLiveHmacHex] = useState<string>('');
+  const [copiedCurl, setCopiedCurl] = useState(false);
   const [replayBanner, setReplayBanner] = useState<string | null>(null);
 
   // Mode C: JWT & Cookie X-Ray state
@@ -44,6 +57,17 @@ export function App() {
   const [jwtPresetId, setJwtPresetId] = useState<string>(jwtPresets[0].id);
   const [jwtRaw, setJwtRaw] = useState<string>(jwtPresets[0].jwt);
   const [cookieRaw, setCookieRaw] = useState<string>(jwtPresets[0].cookie);
+  const [pkce, setPkce] = useState<{ verifier: string; challenge: string } | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    computeHmacSha256Hex(hmacSecret, editablePayload).then((hex) => {
+      if (active) setLiveHmacHex(hex);
+    });
+    return () => {
+      active = false;
+    };
+  }, [hmacSecret, editablePayload]);
 
   const sseParsed = useMemo(() => parseSseStream(sseRaw), [sseRaw]);
   const activeFrame = sseParsed.frames[Math.min(sseFrameIdx, Math.max(0, sseParsed.frames.length - 1))];
@@ -198,12 +222,23 @@ export function App() {
                 <span>{ssePlaying ? 'Pause Stream' : 'Play Frames'}</span>
               </button>
             </div>
-            <div className="flex gap-3 font-mono text-[11px]">
+            <div className="flex flex-wrap items-center gap-3 font-mono text-[11px]">
               <span className="text-slate-300">{sseParsed.frames.length} frames</span>
-              <span className="text-cyan-300">{sseParsed.totalDurationMs}ms ({sseParsed.tokensPerSec} tok/s)</span>
+              <span className="text-sky-300">TTFT {sseParsed.ttftMs}ms</span>
+              <span className="text-amber-300">p95 {sseParsed.p95LatencyMs}ms</span>
+              <span className="text-cyan-300">{sseParsed.tokensPerSec} tok/s</span>
               <span className={sseParsed.malformedCount ? 'text-rose-400' : 'text-emerald-400'}>
                 {sseParsed.malformedCount} malformed
               </span>
+              {sseParsed.malformedCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setSseRaw((prev) => autoRepairSseJson(prev))}
+                  className="inline-flex items-center gap-1 rounded border border-amber-500/50 bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-200 hover:bg-amber-500/25"
+                >
+                  <Wand2 className="h-3 w-3" /> Auto-Repair JSON
+                </button>
+              )}
             </div>
           </div>
 
@@ -408,6 +443,39 @@ export function App() {
                   </div>
                 </div>
 
+                <div className="rounded-xl border border-slate-800 bg-[#090D16] p-3.5 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <span className="font-bold uppercase tracking-wider text-emerald-300">
+                      Real WebCrypto HMAC-SHA256 Signer
+                    </span>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(generateCurlSnippet(selectedWh, editablePayload, liveHmacHex));
+                          setCopiedCurl(true);
+                          setTimeout(() => setCopiedCurl(false), 1600);
+                        } catch {}
+                      }}
+                      className="inline-flex items-center gap-1 rounded border border-slate-700 bg-[#111827] px-2 py-0.5 font-mono text-[10px] text-sky-300 hover:border-sky-500"
+                    >
+                      {copiedCurl ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+                      Copy curl Replay
+                    </button>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-[0.8fr_1.4fr]">
+                    <input
+                      value={hmacSecret}
+                      onChange={(e) => setHmacSecret(e.target.value)}
+                      placeholder="Signing secret..."
+                      className="rounded border border-slate-700 bg-[#111827] px-2.5 py-1.5 font-mono text-[11px] text-amber-200 focus:border-cyan-500 focus:outline-none"
+                    />
+                    <div className="truncate rounded border border-slate-800 bg-[#111827] px-2.5 py-1.5 font-mono text-[11px] text-emerald-300">
+                      sha256={liveHmacHex || 'computing...'}
+                    </div>
+                  </div>
+                </div>
+
                 <div className="flex flex-1 flex-col rounded-xl border border-slate-800 bg-[#090D16] overflow-hidden">
                   <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900/60 px-3.5 py-2 text-xs font-semibold text-slate-300">
                     <span>Editable JSON Payload (mutate fields then click Replay)</span>
@@ -457,11 +525,39 @@ export function App() {
                 </button>
               ))}
             </div>
-            <div className="font-mono text-xs">
-              Security Posture:{' '}
-              <strong className={jwtAudit.score >= 80 ? 'text-emerald-400' : jwtAudit.score >= 50 ? 'text-amber-300' : 'text-rose-400'}>
-                {jwtAudit.score}/100
-              </strong>
+            <div className="flex flex-wrap items-center gap-2 font-mono text-xs">
+              <button
+                type="button"
+                onClick={() => setCookieRaw((c) => hardenSetCookieHeader(c))}
+                className="inline-flex items-center gap-1 rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[11px] text-emerald-200 hover:bg-emerald-500/25"
+              >
+                <Wand2 className="h-3 w-3" /> Harden Cookie
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const now = Math.floor(Date.now() / 1000);
+                  const h = { ...(jwtAudit.header ?? { typ: 'JWT' }), alg: 'RS256' };
+                  const p = { ...(jwtAudit.payload ?? { sub: 'usr_demo' }), iss: 'https://auth.aether.dev', aud: 'api.aether.dev', iat: now, exp: now + 3600 };
+                  setJwtRaw(`${encodeBase64UrlJson(h)}.${encodeBase64UrlJson(p)}.ReSignedDemoRS256`);
+                }}
+                className="inline-flex items-center gap-1 rounded border border-sky-500/40 bg-sky-500/15 px-2 py-0.5 text-[11px] text-sky-200 hover:bg-sky-500/25"
+              >
+                <Sparkles className="h-3 w-3" /> Re-Sign RS256 (+1h)
+              </button>
+              <button
+                type="button"
+                onClick={async () => setPkce(await generatePkcePair())}
+                className="inline-flex items-center gap-1 rounded border border-violet-500/40 bg-violet-500/15 px-2 py-0.5 text-[11px] text-violet-200 hover:bg-violet-500/25"
+              >
+                Generate PKCE S256
+              </button>
+              <span>
+                Score:{' '}
+                <strong className={jwtAudit.score >= 80 ? 'text-emerald-400' : jwtAudit.score >= 50 ? 'text-amber-300' : 'text-rose-400'}>
+                  {jwtAudit.score}/100
+                </strong>
+              </span>
             </div>
           </div>
 
@@ -530,6 +626,14 @@ export function App() {
                   <span>exp: {jwtAudit.expiresAt ?? 'missing'}</span>
                 </div>
               </div>
+
+              {pkce && (
+                <div className="rounded-xl border border-violet-500/40 bg-violet-500/10 p-3.5 font-mono text-[11px] space-y-1">
+                  <div className="font-bold text-violet-200">OAuth2 PKCE Pair (WebCrypto SHA-256)</div>
+                  <div className="break-all text-slate-300">code_verifier: <span className="text-sky-300">{pkce.verifier}</span></div>
+                  <div className="break-all text-slate-300">code_challenge (S256): <span className="text-emerald-300">{pkce.challenge}</span></div>
+                </div>
+              )}
 
               <div className="space-y-2 rounded-xl border border-slate-800 bg-[#090D16] p-4">
                 <div className="text-xs font-bold uppercase tracking-wider text-slate-200">
